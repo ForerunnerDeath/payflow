@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "Payment processing service for PayFlow"
 requires-python = ">=3.11"
 dependencies = [
+    "alembic",
+    "asyncpg",
     "fastapi",
     "pydantic-settings",
+    "sqlalchemy[asyncio]",
     "structlog",
     "uvicorn[standard]",
 ]
