@@ -1,17 +1,30 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
+import httpx
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.payment import Payment
+from app.clients.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+from app.clients.payment_provider import PaymentProviderClient
+from app.models.payment import Payment, PaymentStatus
 from app.repositories.payment import PaymentRepository
 from app.schemas.payment import PaymentCreate
+from app.schemas.provider import ProviderPaymentRequest
 
 
 class PaymentService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider_client: PaymentProviderClient,
+        circuit_breaker: CircuitBreaker,
+    ) -> None:
         self._session = session
         self._repository = PaymentRepository(session)
+        self._provider_client = provider_client
+        self._circuit_breaker = circuit_breaker
 
     async def create_payment(self, data: PaymentCreate) -> Payment:
         existing_payment = await self._repository.get_by_idempotency_key(
@@ -40,6 +53,33 @@ class PaymentService:
         except Exception:
             await self._session.rollback()
             raise
+        await self._session.refresh(payment)
+        payment.status = PaymentStatus.PROCESSING
+        await self._session.commit()
+        provider_request = ProviderPaymentRequest(
+            payment_id=payment.id,
+            amount=payment.amount,
+            currency=payment.currency,
+        )
+        try:
+            provider_response = await self._circuit_breaker.call(
+                self._provider_client.process_payment,
+                provider_request,
+            )
+        except (httpx.HTTPError, CircuitBreakerOpenError, ValidationError) as exc:
+            payment.status = PaymentStatus.FAILED
+            payment.failure_reason = str(exc)
+            payment.provider_payment_id = None
+            payment.completed_at = None
+            await self._session.commit()
+            await self._session.refresh(payment)
+            return payment
+        payment.status = PaymentStatus.COMPLETED
+        payment.provider_payment_id = str(provider_response.provider_payment_id)
+        payment.completed_at = datetime.now(UTC)
+        payment.failure_reason = None
+
+        await self._session.commit()
         await self._session.refresh(payment)
         return payment
 
