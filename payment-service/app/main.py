@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import cast
 
 import httpx
 import structlog
@@ -19,7 +20,7 @@ from app.core.database import (
 )
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
-from app.integrations.kafka_producer import KafkaEventProducer
+from app.integrations.kafka_producer import KafkaEventProducer, KafkaProducerProtocol
 from app.services.outbox_relay import OutboxRelay
 
 
@@ -50,7 +51,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         bootstrap_servers=settings.kafka_bootstrap_servers
     )
     kafka_producer = KafkaEventProducer(
-        topic=settings.kafka_topic, producer=raw_kafka_producer
+        topic=settings.kafka_topic,
+        producer=cast(KafkaProducerProtocol, raw_kafka_producer),
     )
     outbox_stop_event = asyncio.Event()
     outbox_relay = OutboxRelay(
@@ -66,6 +68,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         await check_db_connection()  # Проверяем соединение с базой данных
         await kafka_producer.start()  # Запускаем Kafka producer
         kafka_producer_started = True
+        application.state.kafka_producer = kafka_producer
         relay_task = asyncio.create_task(
             outbox_relay.run(outbox_stop_event), name="outbox_relay"
         )

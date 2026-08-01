@@ -41,6 +41,18 @@ services:
       PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS: ${PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS}
     ports:
       - "${PAYMENT_SERVICE_PORT}:${APP_PORT}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       mock-provider:
         condition: service_healthy
