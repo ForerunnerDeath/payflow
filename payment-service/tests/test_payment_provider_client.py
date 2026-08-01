@@ -1,6 +1,8 @@
 from decimal import Decimal
+from unittest.mock import Mock, call
 from uuid import uuid4
 
+import app.clients.payment_provider as payment_provider_module
 import httpx
 import pytest
 from app.clients.payment_provider import PaymentProviderClient
@@ -9,7 +11,11 @@ from pydantic import ValidationError
 
 
 @pytest.mark.asyncio
-async def test_retries_on_5xx_and_returns_success() -> None:
+async def test_retries_on_5xx_and_returns_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger_mock = Mock()
+    monkeypatch.setattr(payment_provider_module, "logger", logger_mock)
     attempts = 0
     provider_payment_id = uuid4()
 
@@ -52,6 +58,29 @@ async def test_retries_on_5xx_and_returns_success() -> None:
     assert result.status == "approved"
     assert result.provider_payment_id == provider_payment_id
 
+    assert logger_mock.warning.call_args_list == [
+        call(
+            "payment_provider_retry_scheduled",
+            attempt=1,
+            next_attempt=2,
+            max_attempts=3,
+            delay_seconds=0.0,
+            error_type="HTTPStatusError",
+            status_code=500,
+        ),
+        call(
+            "payment_provider_retry_scheduled",
+            attempt=2,
+            next_attempt=3,
+            max_attempts=3,
+            delay_seconds=0.0,
+            error_type="HTTPStatusError",
+            status_code=500,
+        ),
+    ]
+
+    logger_mock.error.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_does_not_retry_on_4xx() -> None:
@@ -92,7 +121,11 @@ async def test_does_not_retry_on_4xx() -> None:
 
 
 @pytest.mark.asyncio
-async def test_raises_after_all_5xx_attempts_are_exhausted() -> None:
+async def test_raises_after_all_5xx_attempts_are_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger_mock = Mock()
+    monkeypatch.setattr(payment_provider_module, "logger", logger_mock)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -127,10 +160,21 @@ async def test_raises_after_all_5xx_attempts_are_exhausted() -> None:
 
     assert attempts == 3
     assert exc_info.value.response.status_code == 500
+    logger_mock.error.assert_called_once_with(
+        "payment_provider_retry_exhausted",
+        attempt=3,
+        max_attempts=3,
+        error_type="HTTPStatusError",
+        status_code=500,
+    )
 
 
 @pytest.mark.asyncio
-async def test_retries_on_timeout_and_returns_success() -> None:
+async def test_retries_on_timeout_and_returns_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger_mock = Mock()
+    monkeypatch.setattr(payment_provider_module, "logger", logger_mock)
     attempts = 0
     provider_payment_id = uuid4()
 
@@ -177,9 +221,36 @@ async def test_retries_on_timeout_and_returns_success() -> None:
     assert result.status == "approved"
     assert result.provider_payment_id == provider_payment_id
 
+    assert logger_mock.warning.call_args_list == [
+        call(
+            "payment_provider_retry_scheduled",
+            attempt=1,
+            next_attempt=2,
+            max_attempts=3,
+            delay_seconds=0.0,
+            error_type="ReadTimeout",
+            status_code=None,
+        ),
+        call(
+            "payment_provider_retry_scheduled",
+            attempt=2,
+            next_attempt=3,
+            max_attempts=3,
+            delay_seconds=0.0,
+            error_type="ReadTimeout",
+            status_code=None,
+        ),
+    ]
+
+    logger_mock.error.assert_not_called()
+
 
 @pytest.mark.asyncio
-async def test_raises_after_all_timeout_attempts_are_exhausted() -> None:
+async def test_raises_after_all_timeout_attempts_are_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger_mock = Mock()
+    monkeypatch.setattr(payment_provider_module, "logger", logger_mock)
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -213,6 +284,13 @@ async def test_raises_after_all_timeout_attempts_are_exhausted() -> None:
             await provider_client.process_payment(request_data)
 
     assert attempts == 3
+    logger_mock.error.assert_called_once_with(
+        "payment_provider_retry_exhausted",
+        attempt=3,
+        max_attempts=3,
+        error_type="ReadTimeout",
+        status_code=None,
+    )
 
 
 @pytest.mark.asyncio
