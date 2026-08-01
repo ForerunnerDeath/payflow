@@ -8,6 +8,9 @@ PAYMENT_SERVICE_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     database_url: str
     kafka_bootstrap_servers: str
+    kafka_topic: str
+    outbox_relay_batch_size: int
+    outbox_relay_poll_interval_seconds: float
     app_host: str
     app_port: int
     payment_provider_url: str
