@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -74,3 +74,49 @@ async def test_publish_sends_json_event_with_payment_id_key() -> None:
         "status": "completed",
         "timestamp": "2026-08-01T10:30:00Z",
     }
+
+
+@pytest.mark.asyncio
+async def test_check_connection_succeeds_when_topic_exists() -> None:
+    producer = MagicMock()
+    metadata = MagicMock()
+
+    metadata.topics.return_value = {"payments", "another-topic"}
+    producer.client.fetch_all_metadata = AsyncMock(return_value=metadata)
+
+    event_producer = KafkaEventProducer(topic="payments", producer=producer)
+
+    await event_producer.check_connection()
+
+    producer.client.fetch_all_metadata.assert_awaited_once_with()
+    metadata.topics.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_check_connection_fails_when_topic_is_missing() -> None:
+    producer = MagicMock()
+    metadata = MagicMock()
+
+    metadata.topics.return_value = {"another-topic"}
+    producer.client.fetch_all_metadata = AsyncMock(return_value=metadata)
+
+    event_producer = KafkaEventProducer(topic="payments", producer=producer)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Kafka topic 'payments' is unavailable",
+    ):
+        await event_producer.check_connection()
+
+
+@pytest.mark.asyncio
+async def test_check_connection_propagates_kafka_error() -> None:
+    producer = MagicMock()
+    producer.client.fetch_all_metadata = AsyncMock(
+        side_effect=ConnectionError("Kafka is unavailable")
+    )
+
+    event_producer = KafkaEventProducer(topic="payments", producer=producer)
+
+    with pytest.raises(ConnectionError, match="Kafka is unavailable"):
+        await event_producer.check_connection()
