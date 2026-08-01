@@ -4,9 +4,11 @@ from time import monotonic
 from typing import TypeVar
 
 import httpx
+import structlog
 
 ArgumentT = TypeVar("ArgumentT")
 ResultT = TypeVar("ResultT")
+logger = structlog.get_logger()
 
 
 class CircuitBreakerState(StrEnum):
@@ -31,9 +33,9 @@ class CircuitBreaker:
         self.failure_count: int = 0
         self.opened_at: float | None = None
 
-    def _before_call(self) -> None:
+    def _before_call(self) -> bool:
         if self.state == CircuitBreakerState.CLOSED:
-            return
+            return False
         if self.state == CircuitBreakerState.HALF_OPEN:
             raise CircuitBreakerOpenError("Circuit Breaker is open")
         if self.state == CircuitBreakerState.OPEN:
@@ -43,44 +45,94 @@ class CircuitBreaker:
             if elapsed < self.recovery_timeout_seconds:
                 raise CircuitBreakerOpenError("Circuit Breaker is open")
             self.state = CircuitBreakerState.HALF_OPEN
+            logger.info(
+                "circuit_breaker_state_changed",
+                previous_state=CircuitBreakerState.OPEN.value,
+                new_state=CircuitBreakerState.HALF_OPEN.value,
+                reason="recovery_timeout_elapsed",
+                elapsed_seconds=round(elapsed, 3),
+                recovery_timeout_seconds=self.recovery_timeout_seconds,
+            )
+            return True
+        raise RuntimeError(f"Unknown Circuit Breaker state: {self.state}")
+
+    def _record_success(self, is_half_open_probe: bool) -> None:
+        if is_half_open_probe:
+            if self.state != CircuitBreakerState.HALF_OPEN:
+                return
+
+            self.state = CircuitBreakerState.CLOSED
+            self.failure_count = 0
+            self.opened_at = None
+
+            logger.info(
+                "circuit_breaker_state_changed",
+                previous_state=CircuitBreakerState.HALF_OPEN.value,
+                new_state=CircuitBreakerState.CLOSED.value,
+                reason="trial_call_succeeded",
+            )
             return
 
-    def _record_success(self) -> None:
-        self.state = CircuitBreakerState.CLOSED
+        if self.state != CircuitBreakerState.CLOSED:
+            return
+
         self.failure_count = 0
         self.opened_at = None
 
-    def _record_failure(self) -> None:
-        if self.state == CircuitBreakerState.HALF_OPEN:
+    def _record_failure(self, is_half_open_probe: bool) -> None:
+        if is_half_open_probe:
+            if self.state != CircuitBreakerState.HALF_OPEN:
+                return
+
             self.state = CircuitBreakerState.OPEN
             self.opened_at = monotonic()
+
+            logger.warning(
+                "circuit_breaker_state_changed",
+                previous_state=CircuitBreakerState.HALF_OPEN.value,
+                new_state=CircuitBreakerState.OPEN.value,
+                reason="trial_call_failed",
+                recovery_timeout_seconds=self.recovery_timeout_seconds,
+            )
             return
 
-        if self.state == CircuitBreakerState.CLOSED:
-            self.failure_count += 1
-            if self.failure_count >= self.failure_threshold:
-                self.state = CircuitBreakerState.OPEN
-                self.opened_at = monotonic()
+        if self.state != CircuitBreakerState.CLOSED:
+            return
+
+        self.failure_count += 1
+
+        if self.failure_count >= self.failure_threshold:
+            self.state = CircuitBreakerState.OPEN
+            self.opened_at = monotonic()
+
+            logger.warning(
+                "circuit_breaker_state_changed",
+                previous_state=CircuitBreakerState.CLOSED.value,
+                new_state=CircuitBreakerState.OPEN.value,
+                reason="failure_threshold_reached",
+                failure_count=self.failure_count,
+                failure_threshold=self.failure_threshold,
+            )
 
     async def call(
         self, operation: Callable[[ArgumentT], Awaitable[ResultT]], argument: ArgumentT
     ) -> ResultT:
-        self._before_call()
+        is_half_open_probe = self._before_call()
         try:
             result = await operation(argument)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             if 500 <= status_code < 600:
-                self._record_failure()
+                self._record_failure(is_half_open_probe)
             else:
-                self._record_success()
+                self._record_success(is_half_open_probe)
             raise
         except httpx.RequestError:
-            self._record_failure()
+            self._record_failure(is_half_open_probe)
             raise
         except Exception:
-            if self.state == CircuitBreakerState.HALF_OPEN:
-                self._record_success()
+            if is_half_open_probe:
+                self._record_success(is_half_open_probe)
             raise
-        self._record_success()
+        self._record_success(is_half_open_probe)
         return result
