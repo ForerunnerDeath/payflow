@@ -5,6 +5,7 @@ description = "Payment processing service for PayFlow"
 requires-python = ">=3.11"
 dependencies = [
     "alembic",
+    "aiokafka",
     "asyncpg",
     "fastapi",
     "httpx",

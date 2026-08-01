@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, String, false, func
+from sqlalchemy import Boolean, DateTime, Index, String, false, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,6 +11,15 @@ from app.models.base import Base
 
 class OutboxEvent(Base):
     __tablename__ = "outbox_events"
+
+    __table_args__ = (
+        Index(
+            "ix_outbox_events_unpublished_created_at_id",
+            "created_at",
+            "id",
+            postgresql_where=text("published IS FALSE"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid4

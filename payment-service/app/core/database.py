@@ -50,3 +50,9 @@ async def check_db_connection() -> None:
         raise RuntimeError("Database engine is not initialized. Call init_db first.")
     async with _engine.connect() as connection:
         await connection.execute(text("SELECT 1"))
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    if _session_factory is None:
+        raise RuntimeError("SessionFactory is not initialized. Call init_db first.")
+    return _session_factory

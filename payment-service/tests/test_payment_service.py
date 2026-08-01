@@ -7,6 +7,7 @@ import httpx
 import pytest
 from app.clients.circuit_breaker import CircuitBreaker
 from app.clients.payment_provider import PaymentProviderClient
+from app.models.outbox_event import OutboxEvent
 from app.models.payment import Payment, PaymentStatus
 from app.repositories.payment import PaymentRepository
 from app.schemas.payment import PaymentCreate
@@ -65,6 +66,7 @@ async def test_create_payment_returns_existing_payment() -> None:
     session.commit.assert_not_awaited()
     session.rollback.assert_not_awaited()
     session.refresh.assert_not_awaited()
+    session.add.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -122,11 +124,23 @@ async def test_create_payment_commits_new_payment() -> None:
     assert result.currency == data.currency
     assert result.idempotency_key == data.idempotency_key
     assert result.customer_id == data.customer_id
-
     assert result.status == PaymentStatus.COMPLETED
     assert result.provider_payment_id == str(provider_payment_id)
     assert result.completed_at is not None
     assert result.failure_reason is None
+
+    session.add.assert_called_once()
+
+    outbox_event = cast(OutboxEvent, session.add.call_args.args[0])
+
+    assert outbox_event.event_type == "payment.completed"
+    assert outbox_event.id is not None
+    assert outbox_event.payload["event_id"] == str(outbox_event.id)
+    assert outbox_event.payload["payment_id"] == str(payment_id)
+    assert outbox_event.payload["amount"] == "1500.50"
+    assert outbox_event.payload["currency"] == "RUB"
+    assert outbox_event.payload["status"] == "completed"
+    assert isinstance(outbox_event.payload["timestamp"], str)
 
 
 @pytest.mark.asyncio
@@ -294,3 +308,16 @@ async def test_create_payment_marks_failed_on_provider_error() -> None:
     assert session.commit.await_count == 3
     assert session.refresh.await_count == 2
     session.rollback.assert_not_awaited()
+
+    session.add.assert_called_once()
+
+    outbox_event = cast(OutboxEvent, session.add.call_args.args[0])
+
+    assert outbox_event.event_type == "payment.failed"
+    assert outbox_event.id is not None
+    assert outbox_event.payload["event_id"] == str(outbox_event.id)
+    assert outbox_event.payload["payment_id"] == str(payment_id)
+    assert outbox_event.payload["amount"] == "1500.50"
+    assert outbox_event.payload["currency"] == "RUB"
+    assert outbox_event.payload["status"] == "failed"
+    assert isinstance(outbox_event.payload["timestamp"], str)
