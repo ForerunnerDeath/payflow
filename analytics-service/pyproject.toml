@@ -1,0 +1,32 @@
+[project]
+name = "payflow-analytics-service"
+version = "0.1.0"
+description = "Transaction analytics service for PayFlow"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic",
+    "aiokafka",
+    "asyncpg",
+    "fastapi",
+    "pydantic-settings",
+    "redis",
+    "sqlalchemy[asyncio]",
+    "structlog",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
