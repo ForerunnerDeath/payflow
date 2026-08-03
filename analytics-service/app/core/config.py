@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str
     kafka_topic: str
     kafka_consumer_group: str
+    kafka_auto_offset_reset: str
+    kafka_dlq_topic: str
     redis_url: str
     app_host: str
     app_port: int
