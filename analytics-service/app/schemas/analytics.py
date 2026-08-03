@@ -17,6 +17,13 @@ class TransactionResponse(BaseModel):
     processed_at: datetime
 
 
+class TransactionListResponse(BaseModel):
+    items: list[TransactionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class CurrencySummary(BaseModel):
     currency: str
     transaction_count: int
