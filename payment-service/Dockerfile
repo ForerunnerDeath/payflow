@@ -22,5 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /service
 
 COPY --from=builder /opt/venv /opt/venv
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT}"]
