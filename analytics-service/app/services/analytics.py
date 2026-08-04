@@ -15,14 +15,18 @@ from app.schemas.analytics import (
     TransactionListResponse,
     TransactionResponse,
 )
+from app.services.analytics_cache import AnalyticsSummaryCache
 
 SummaryRow = tuple[str, int, Decimal, Decimal, int, int]
 MONEY_QUANTUM = Decimal("0.01")
 
 
 class AnalyticsService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, summary_cache: AnalyticsSummaryCache | None = None
+    ) -> None:
         self._session = session
+        self._summary_cache = summary_cache
 
     @staticmethod
     def _build_filters(
@@ -49,6 +53,36 @@ class AnalyticsService:
         return filters
 
     async def get_summary(
+        self,
+        *,
+        currency: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> AnalyticsSummary:
+        cache_key: str | None = None
+
+        if self._summary_cache is not None:
+            lookup = await self._summary_cache.lookup(
+                currency=currency, date_from=date_from, date_to=date_to
+            )
+
+            if lookup.summary is not None:
+                return lookup.summary
+
+            cache_key = lookup.key
+
+        summary = await self._calculate_summary(
+            currency=currency,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        if self._summary_cache is not None:
+            await self._summary_cache.store(key=cache_key, summary=summary)
+
+        return summary
+
+    async def _calculate_summary(
         self,
         *,
         currency: str | None = None,

@@ -17,6 +17,7 @@ from app.core.database import (
 )
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
+from app.services.analytics_cache import AnalyticsSummaryCache, RedisClientAdapter
 from app.services.payment_event_processor import PaymentEventProcessor
 
 
@@ -29,7 +30,16 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger = structlog.get_logger()
     init_db(settings)
 
-    processor = PaymentEventProcessor(session_factory=get_session_factory())
+    redis_client = RedisClientAdapter.from_url(settings.redis_url)
+    summary_cache = AnalyticsSummaryCache(
+        redis=redis_client,
+        ttl_seconds=settings.analytics_summary_cache_ttl_seconds,
+    )
+    application.state.analytics_summary_cache = summary_cache
+
+    processor = PaymentEventProcessor(
+        session_factory=get_session_factory(), summary_cache=summary_cache
+    )
     application.state.payment_event_processor = processor
 
     dead_letter_publisher = DeadLetterPublisher(
@@ -111,6 +121,11 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                 await dead_letter_publisher.stop()
             except Exception:
                 logger.exception("dead_letter_publisher_stop_failed")
+
+        try:
+            await redis_client.aclose()
+        except Exception:
+            logger.exception("redis_close_failed")
 
         try:
             await close_db()

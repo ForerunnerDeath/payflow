@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
@@ -12,10 +12,19 @@ from app.schemas.analytics import (
     TransactionResponse,
 )
 from app.services.analytics import AnalyticsService
+from app.services.analytics_cache import AnalyticsSummaryCache
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
 SessionDependency = Annotated[AsyncSession, Depends(get_session)]
+
+
+def get_summary_cache(request: Request) -> AnalyticsSummaryCache:
+    return cast(AnalyticsSummaryCache, request.app.state.analytics_summary_cache)
+
+
+SummaryCacheDependency = Annotated[AnalyticsSummaryCache, Depends(get_summary_cache)]
+
 
 CurrencyQuery = Annotated[
     str | None,
@@ -39,17 +48,14 @@ def _validate_date_range(date_from: datetime | None, date_to: datetime | None) -
 @router.get("/summary", response_model=AnalyticsSummary)
 async def get_analytics_summary(
     session: SessionDependency,
+    summary_cache: SummaryCacheDependency,
     currency: CurrencyQuery = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
 ) -> AnalyticsSummary:
-    if _validate_date_range(date_from, date_to):
-        raise HTTPException(
-            status_code=422,
-            detail="date_from must be before or equal to date_to",
-        )
+    _validate_date_range(date_from, date_to)
 
-    service = AnalyticsService(session)
+    service = AnalyticsService(session, summary_cache=summary_cache)
 
     return await service.get_summary(
         currency=currency.upper() if currency is not None else None,

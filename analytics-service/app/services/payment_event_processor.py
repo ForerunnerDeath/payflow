@@ -5,11 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models.processed_event import ProcessedEvent
 from app.models.transaction import Transaction
 from app.schemas.event import PaymentEvent
+from app.services.analytics_cache import AnalyticsSummaryCache
 
 
 class PaymentEventProcessor:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        summary_cache: AnalyticsSummaryCache,
+    ) -> None:
         self._session_factory = session_factory
+        self._summary_cache = summary_cache
 
     async def process(self, event: PaymentEvent) -> bool:
         async with self._session_factory() as session, session.begin():
@@ -48,5 +54,5 @@ class PaymentEventProcessor:
             )
 
             await session.execute(transaction_statement)
-
+        await self._summary_cache.invalidate()
         return True

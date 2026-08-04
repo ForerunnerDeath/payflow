@@ -6,6 +6,11 @@ from uuid import UUID
 import pytest
 from app.models.transaction import Transaction
 from app.services.analytics import AnalyticsService
+from app.services.analytics_cache import (
+    AnalyticsSummary,
+    AnalyticsSummaryCache,
+    SummaryCacheLookup,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -382,3 +387,70 @@ async def test_get_summary_rounds_money_values_to_two_decimal_places() -> None:
 
     assert currency_summary.total_amount == Decimal("100.00")
     assert currency_summary.average_amount == Decimal("33.33")
+
+
+@pytest.mark.asyncio
+async def test_get_summary_returns_cached_result_without_database_query() -> None:
+    session = MagicMock(spec=AsyncSession)
+
+    summary = AnalyticsSummary(
+        total_transactions=1,
+        completed_transactions=1,
+        failed_transactions=0,
+        currencies=[],
+    )
+
+    cache = MagicMock(spec=AnalyticsSummaryCache)
+    cache.lookup = AsyncMock(
+        return_value=SummaryCacheLookup(
+            key="analytics:summary:v3:currency=RUB:from=all:to=all",
+            summary=summary,
+        )
+    )
+    cache.store = AsyncMock()
+
+    service = AnalyticsService(session, summary_cache=cache)
+
+    result = await service.get_summary(currency="RUB")
+
+    assert result == summary
+
+    cache.lookup.assert_awaited_once_with(
+        currency="RUB",
+        date_from=None,
+        date_to=None,
+    )
+    cache.store.assert_not_awaited()
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_summary_stores_database_result_after_cache_miss() -> None:
+    session = MagicMock(spec=AsyncSession)
+
+    database_result = MagicMock()
+    database_result.tuples.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=database_result)
+
+    cache_key = "analytics:summary:v3:currency=RUB:from=all:to=all"
+
+    cache = MagicMock(spec=AnalyticsSummaryCache)
+    cache.lookup = AsyncMock(
+        return_value=SummaryCacheLookup(key=cache_key, summary=None)
+    )
+    cache.store = AsyncMock()
+
+    service = AnalyticsService(session, summary_cache=cache)
+
+    summary = await service.get_summary(currency="RUB")
+
+    assert summary == AnalyticsSummary(
+        total_transactions=0,
+        completed_transactions=0,
+        failed_transactions=0,
+        currencies=[],
+    )
+
+    session.execute.assert_awaited_once()
+
+    cache.store.assert_awaited_once_with(key=cache_key, summary=summary)

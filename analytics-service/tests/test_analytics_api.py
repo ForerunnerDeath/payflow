@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+from app.api.analytics import get_summary_cache
 from app.core.database import get_session
 from app.main import app
 from app.schemas.analytics import (
@@ -15,6 +16,7 @@ from app.schemas.analytics import (
     TransactionResponse,
 )
 from app.services.analytics import AnalyticsService
+from app.services.analytics_cache import AnalyticsSummaryCache
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,10 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def test_summary_endpoint_passes_filters_to_service() -> None:
     session = MagicMock(spec=AsyncSession)
 
+    summary_cache = cast(AnalyticsSummaryCache, MagicMock(spec=AnalyticsSummaryCache))
+
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         yield cast(AsyncSession, session)
 
     app.dependency_overrides[get_session] = override_get_session
+
+    def override_get_summary_cache() -> AnalyticsSummaryCache:
+        return summary_cache
+
+    app.dependency_overrides[get_summary_cache] = override_get_summary_cache
 
     date_from = datetime(
         2026,
@@ -83,7 +92,7 @@ async def test_summary_endpoint_passes_filters_to_service() -> None:
                     },
                 )
 
-        service_class.assert_called_once_with(session)
+        service_class.assert_called_once_with(session, summary_cache=summary_cache)
 
         service.get_summary.assert_awaited_once_with(
             currency="RUB",
@@ -114,10 +123,17 @@ async def test_summary_endpoint_passes_filters_to_service() -> None:
 async def test_summary_endpoint_rejects_invalid_date_range() -> None:
     session = MagicMock(spec=AsyncSession)
 
+    summary_cache = cast(AnalyticsSummaryCache, MagicMock(spec=AnalyticsSummaryCache))
+
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         yield cast(AsyncSession, session)
 
     app.dependency_overrides[get_session] = override_get_session
+
+    def override_get_summary_cache() -> AnalyticsSummaryCache:
+        return summary_cache
+
+    app.dependency_overrides[get_summary_cache] = override_get_summary_cache
 
     service = MagicMock(spec=AnalyticsService)
     service.get_summary = AsyncMock()
@@ -153,10 +169,17 @@ async def test_summary_endpoint_rejects_invalid_date_range() -> None:
 async def test_summary_endpoint_rejects_invalid_currency() -> None:
     session = MagicMock(spec=AsyncSession)
 
+    summary_cache = cast(AnalyticsSummaryCache, MagicMock(spec=AnalyticsSummaryCache))
+
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         yield cast(AsyncSession, session)
 
     app.dependency_overrides[get_session] = override_get_session
+
+    def override_get_summary_cache() -> AnalyticsSummaryCache:
+        return summary_cache
+
+    app.dependency_overrides[get_summary_cache] = override_get_summary_cache
 
     service = MagicMock(spec=AnalyticsService)
     service.get_summary = AsyncMock()
