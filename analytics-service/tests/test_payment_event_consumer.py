@@ -73,7 +73,7 @@ async def test_consumer_starts_and_stops_kafka_client() -> None:
 @pytest.mark.asyncio
 async def test_process_message_validates_and_forwards_event() -> None:
     processor = MagicMock(spec=PaymentEventProcessor)
-    processor.process = AsyncMock()
+    processor.process = AsyncMock(return_value=True)
 
     kafka_consumer = MagicMock()
 
@@ -90,13 +90,15 @@ async def test_process_message_validates_and_forwards_event() -> None:
             group_id="payflow-analytics-service",
             auto_offset_reset="earliest",
             processor=cast(PaymentEventProcessor, processor),
-            dead_letter_publisher=cast(DeadLetterPublisher, dead_letter_publisher),
+            dead_letter_publisher=cast(
+                DeadLetterPublisher,
+                dead_letter_publisher,
+            ),
         )
 
-    value = VALID_EVENT_JSON
+    event, processed = await consumer.process_message(VALID_EVENT_JSON)
 
-    event = await consumer.process_message(value)
-
+    assert processed is True
     assert event.event_type == "payment.completed"
     assert event.status == "completed"
     processor.process.assert_awaited_once_with(event)
@@ -587,4 +589,137 @@ async def test_run_continues_when_failed_partition_was_revoked() -> None:
     kafka_consumer.seek.assert_called_once_with(
         revoked_partition,
         revoked_partition_message.offset,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_finishes_current_message_and_commits_offset_on_shutdown() -> None:
+    processing_started = asyncio.Event()
+    allow_processing_to_finish = asyncio.Event()
+
+    async def process_event(_: object) -> None:
+        processing_started.set()
+        await allow_processing_to_finish.wait()
+
+    processor = MagicMock(spec=PaymentEventProcessor)
+    processor.process = AsyncMock(side_effect=process_event)
+
+    dead_letter_publisher = MagicMock(spec=DeadLetterPublisher)
+    dead_letter_publisher.publish = AsyncMock()
+
+    message = FakeKafkaMessage(
+        topic="payments",
+        partition=1,
+        offset=42,
+        key=b"payment-123",
+        value=VALID_EVENT_JSON,
+    )
+
+    topic_partition = MagicMock()
+
+    kafka_consumer = MagicMock()
+    kafka_consumer.getmany = AsyncMock(
+        return_value={
+            topic_partition: [message],
+        }
+    )
+    kafka_consumer.commit = AsyncMock()
+
+    with patch(
+        "app.consumer.payment_event_consumer.AIOKafkaConsumer",
+        return_value=kafka_consumer,
+    ):
+        consumer = PaymentEventConsumer(
+            topic="payments",
+            bootstrap_servers="localhost:29092",
+            group_id="payflow-analytics-service",
+            auto_offset_reset="earliest",
+            processor=cast(PaymentEventProcessor, processor),
+            dead_letter_publisher=cast(
+                DeadLetterPublisher,
+                dead_letter_publisher,
+            ),
+        )
+
+    stop_event = asyncio.Event()
+
+    run_task = asyncio.create_task(
+        consumer.run(stop_event),
+    )
+
+    await processing_started.wait()
+
+    stop_event.set()
+
+    await asyncio.sleep(0)
+
+    assert not run_task.done()
+    kafka_consumer.commit.assert_not_awaited()
+
+    allow_processing_to_finish.set()
+
+    await asyncio.wait_for(
+        run_task,
+        timeout=1.0,
+    )
+
+    processor.process.assert_awaited_once()
+    kafka_consumer.commit.assert_awaited_once()
+
+    committed_offsets = kafka_consumer.commit.await_args.args[0]
+    committed_offset = next(iter(committed_offsets.values()))
+
+    assert committed_offset == message.offset + 1
+
+
+@pytest.mark.asyncio
+async def test_handle_message_logs_duplicate_and_commits_offset() -> None:
+    processor = MagicMock(spec=PaymentEventProcessor)
+    processor.process = AsyncMock(return_value=False)
+
+    kafka_consumer = MagicMock()
+    kafka_consumer.commit = AsyncMock()
+
+    dead_letter_publisher = MagicMock(spec=DeadLetterPublisher)
+    dead_letter_publisher.publish = AsyncMock()
+
+    with patch(
+        "app.consumer.payment_event_consumer.AIOKafkaConsumer",
+        return_value=kafka_consumer,
+    ):
+        consumer = PaymentEventConsumer(
+            topic="payments",
+            bootstrap_servers="localhost:29092",
+            group_id="payflow-analytics-service",
+            auto_offset_reset="earliest",
+            processor=cast(PaymentEventProcessor, processor),
+            dead_letter_publisher=cast(
+                DeadLetterPublisher,
+                dead_letter_publisher,
+            ),
+        )
+
+    message = FakeKafkaMessage(
+        topic="payments",
+        partition=2,
+        offset=42,
+        key=b"payment-123",
+        value=VALID_EVENT_JSON,
+    )
+
+    with patch("app.consumer.payment_event_consumer.logger") as logger_mock:
+        event = await consumer.handle_message(message)
+
+    assert event is not None
+
+    processor.process.assert_awaited_once_with(event)
+    kafka_consumer.commit.assert_awaited_once()
+
+    logger_mock.info.assert_called_once_with(
+        "duplicate_payment_event_skipped",
+        event_id=str(event.event_id),
+        payment_id=str(event.payment_id),
+        topic="payments",
+        partition=2,
+        offset=42,
     )
