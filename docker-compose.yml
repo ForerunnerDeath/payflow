@@ -76,6 +76,7 @@ services:
       KAFKA_AUTO_OFFSET_RESET: ${ANALYTICS_KAFKA_AUTO_OFFSET_RESET}
       KAFKA_DLQ_TOPIC: ${ANALYTICS_KAFKA_DLQ_TOPIC}
       REDIS_URL: ${ANALYTICS_REDIS_URL}
+      ANALYTICS_SUMMARY_CACHE_TTL_SECONDS: ${ANALYTICS_SUMMARY_CACHE_TTL_SECONDS}
       APP_HOST: ${ANALYTICS_APP_HOST}
       APP_PORT: ${ANALYTICS_APP_PORT}
     ports:
@@ -86,7 +87,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/ping', timeout=3)",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health/ready', timeout=3)",
         ]
       interval: 10s
       timeout: 5s
@@ -94,8 +95,6 @@ services:
       start_period: 10s
     depends_on:
       analytics-db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       kafka:
         condition: service_healthy

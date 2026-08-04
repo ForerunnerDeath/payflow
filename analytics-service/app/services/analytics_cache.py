@@ -34,6 +34,10 @@ class RedisClientAdapter:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def ping(self) -> bool:
+        result = await self._client.ping()  # pyright: ignore[reportUnknownMemberType]
+        return bool(result)
+
 
 class RedisClientProtocol(Protocol):
     async def get(

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from app.api.router import router
 from app.consumer.dead_letter_publisher import DeadLetterPublisher
 from app.consumer.payment_event_consumer import PaymentEventConsumer
+from app.consumer.supervision import supervise_consumer
 from app.core.config import Settings
 from app.core.database import (
     check_db_connection,
@@ -15,6 +16,7 @@ from app.core.database import (
     get_session_factory,
     init_db,
 )
+from app.core.health import ConsumerHealthState
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.services.analytics_cache import AnalyticsSummaryCache, RedisClientAdapter
@@ -31,6 +33,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     init_db(settings)
 
     redis_client = RedisClientAdapter.from_url(settings.redis_url)
+    application.state.redis_client = redis_client
     summary_cache = AnalyticsSummaryCache(
         redis=redis_client,
         ttl_seconds=settings.analytics_summary_cache_ttl_seconds,
@@ -58,6 +61,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     )
     application.state.payment_event_consumer = consumer
 
+    consumer_health_state = ConsumerHealthState()
+    application.state.consumer_health_state = consumer_health_state
+
     consumer_started = False
     dead_letter_publisher_started = False
 
@@ -74,7 +80,11 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         consumer_started = True
 
         consumer_task = asyncio.create_task(
-            consumer.run(consumer_stop_event),
+            supervise_consumer(
+                consumer=consumer,
+                stop_event=consumer_stop_event,
+                health_state=consumer_health_state,
+            ),
             name="payment-event-consumer",
         )
 
@@ -89,13 +99,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         yield  # Передаем управление FastAPI для обработки запросов
 
     finally:
+        consumer_health_state.mark_stopping()
         consumer_stop_event.set()
-
-        if consumer_started:
-            try:
-                await consumer.stop()
-            except Exception:
-                logger.exception("payment_event_consumer_stop_failed")
 
         if consumer_task is not None:
             try:
@@ -115,6 +120,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
                     logger.exception("payment_event_consumer_task_failed_after_cancel")
             except Exception:
                 logger.exception("payment_event_consumer_task_failed")
+
+        if consumer_started:
+            try:
+                await consumer.stop()
+            except Exception:
+                logger.exception("payment_event_consumer_stop_failed")
+
+        consumer_health_state.mark_stopped()
 
         if dead_letter_publisher_started:
             try:
