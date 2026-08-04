@@ -1,3 +1,4 @@
+import asyncio
 from typing import Protocol, cast
 
 import structlog
@@ -15,6 +16,8 @@ from app.schemas.health import (
 )
 
 logger = structlog.get_logger(__name__)
+
+REDIS_HEALTH_CHECK_TIMEOUT_SECONDS = 1.0
 
 
 class RedisHealthClient(Protocol):
@@ -39,7 +42,16 @@ async def _check_postgres() -> DependencyStatus:
 
 async def _check_redis(redis_client: RedisHealthClient) -> DependencyStatus:
     try:
-        is_available = await redis_client.ping()
+        is_available = await asyncio.wait_for(
+            redis_client.ping(),
+            timeout=REDIS_HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "redis_health_check_timed_out",
+            timeout_seconds=REDIS_HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
+        return "unavailable"
     except Exception:
         logger.warning(
             "redis_health_check_failed",
