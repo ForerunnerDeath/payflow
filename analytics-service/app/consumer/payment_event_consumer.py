@@ -208,16 +208,16 @@ class PaymentEventConsumer:
                 group_id=self._group_id,
             )
 
-    async def process_message(self, value: bytes) -> PaymentEvent:
+    async def process_message(self, value: bytes) -> tuple[PaymentEvent, bool]:
         event = PaymentEvent.model_validate_json(value)
 
-        await self._processor.process(event)
+        processed = await self._processor.process(event)
 
-        return event
+        return event, processed
 
     async def handle_message(self, message: KafkaMessage) -> PaymentEvent | None:
         try:
-            event = await self.process_message(message.value)
+            event, processed = await self.process_message(message.value)
         except ValidationError as error:
             await self._dead_letter_publisher.publish(
                 source_topic=message.topic,
@@ -241,14 +241,24 @@ class PaymentEventConsumer:
 
         await self._commit_message(message)
 
-        logger.info(
-            "payment_event_processed",
-            event_id=str(event.event_id),
-            payment_id=str(event.payment_id),
-            topic=message.topic,
-            partition=message.partition,
-            offset=message.offset,
-        )
+        if processed:
+            logger.info(
+                "payment_event_processed",
+                event_id=str(event.event_id),
+                payment_id=str(event.payment_id),
+                topic=message.topic,
+                partition=message.partition,
+                offset=message.offset,
+            )
+        else:
+            logger.info(
+                "duplicate_payment_event_skipped",
+                event_id=str(event.event_id),
+                payment_id=str(event.payment_id),
+                topic=message.topic,
+                partition=message.partition,
+                offset=message.offset,
+            )
 
         return event
 
