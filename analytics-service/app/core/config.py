@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     kafka_auto_offset_reset: str
     kafka_dlq_topic: str
     redis_url: str
+    analytics_summary_cache_ttl_seconds: int
     app_host: str
     app_port: int
 
