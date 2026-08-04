@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 from app.schemas.event import PaymentEvent
+from app.services.analytics_cache import AnalyticsSummaryCache
 from app.services.payment_event_processor import PaymentEventProcessor
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -22,12 +23,16 @@ async def test_process_upserts_transaction_for_new_event() -> None:
     transaction_context.__aenter__ = AsyncMock(return_value=None)
     transaction_context.__aexit__ = AsyncMock(return_value=None)
 
+    summary_cache = MagicMock(spec=AnalyticsSummaryCache)
+    summary_cache.invalidate = AsyncMock()
+
     session.begin.return_value = transaction_context
 
     session_factory_mock = MagicMock(return_value=session_context)
 
     processor = PaymentEventProcessor(
-        cast(async_sessionmaker[AsyncSession], session_factory_mock)
+        cast(async_sessionmaker[AsyncSession], session_factory_mock),
+        summary_cache=summary_cache,
     )
 
     event = PaymentEvent(
@@ -61,6 +66,7 @@ async def test_process_upserts_transaction_for_new_event() -> None:
     assert "currency" in compiled_statement
     assert "status" in compiled_statement
     assert "event_type" in compiled_statement
+    summary_cache.invalidate.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -75,6 +81,9 @@ async def test_process_skips_transaction_for_duplicate_event() -> None:
     transaction_context.__aenter__ = AsyncMock(return_value=None)
     transaction_context.__aexit__ = AsyncMock(return_value=None)
 
+    summary_cache = MagicMock(spec=AnalyticsSummaryCache)
+    summary_cache.invalidate = AsyncMock()
+
     session.begin.return_value = transaction_context
 
     execute_result = MagicMock()
@@ -84,7 +93,8 @@ async def test_process_skips_transaction_for_duplicate_event() -> None:
     session_factory_mock = MagicMock(return_value=session_context)
 
     processor = PaymentEventProcessor(
-        cast(async_sessionmaker[AsyncSession], session_factory_mock)
+        cast(async_sessionmaker[AsyncSession], session_factory_mock),
+        summary_cache=summary_cache,
     )
 
     event = PaymentEvent(
@@ -102,3 +112,4 @@ async def test_process_skips_transaction_for_duplicate_event() -> None:
     assert processed is False
     session.execute.assert_awaited_once()
     session.add.assert_not_called()
+    summary_cache.invalidate.assert_not_awaited()
