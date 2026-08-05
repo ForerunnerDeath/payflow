@@ -45,39 +45,35 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     )
     application.state.payment_event_processor = processor
 
-    dead_letter_publisher = DeadLetterPublisher(
-        topic=settings.kafka_dlq_topic,
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-    )
-    application.state.dead_letter_publisher = dead_letter_publisher
-
-    consumer = PaymentEventConsumer(
-        topic=settings.kafka_topic,
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        group_id=settings.kafka_consumer_group,
-        auto_offset_reset=settings.kafka_auto_offset_reset,
-        processor=processor,
-        dead_letter_publisher=dead_letter_publisher,
-    )
-    application.state.payment_event_consumer = consumer
-
     consumer_health_state = ConsumerHealthState()
     application.state.consumer_health_state = consumer_health_state
 
-    consumer_started = False
-    dead_letter_publisher_started = False
-
+    dead_letter_publisher: DeadLetterPublisher | None = None
+    consumer: PaymentEventConsumer | None = None
     consumer_stop_event = asyncio.Event()
     consumer_task: asyncio.Task[None] | None = None
 
     try:
         await check_db_connection()
 
+        dead_letter_publisher = DeadLetterPublisher(
+            topic=settings.kafka_dlq_topic,
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+        )
+        application.state.dead_letter_publisher = dead_letter_publisher
+
         await dead_letter_publisher.start()
-        dead_letter_publisher_started = True
+        consumer = PaymentEventConsumer(
+            topic=settings.kafka_topic,
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            group_id=settings.kafka_consumer_group,
+            auto_offset_reset=settings.kafka_auto_offset_reset,
+            processor=processor,
+            dead_letter_publisher=dead_letter_publisher,
+        )
+        application.state.payment_event_consumer = consumer
 
         await consumer.start()
-        consumer_started = True
 
         consumer_task = asyncio.create_task(
             supervise_consumer(
@@ -121,7 +117,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             except Exception:
                 logger.exception("payment_event_consumer_task_failed")
 
-        if consumer_started:
+        if consumer is not None:
             try:
                 await consumer.stop()
             except Exception:
@@ -129,7 +125,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
         consumer_health_state.mark_stopped()
 
-        if dead_letter_publisher_started:
+        if dead_letter_publisher is not None:
             try:
                 await dead_letter_publisher.stop()
             except Exception:

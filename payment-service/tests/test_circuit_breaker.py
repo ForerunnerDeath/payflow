@@ -404,3 +404,93 @@ async def test_stale_regular_failure_does_not_reopen_half_open_breaker() -> None
 
     assert probe_result == "processed:probe-payment"
     assert breaker.state == CircuitBreakerState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_half_open_probe_reopens_breaker() -> None:
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        recovery_timeout_seconds=0,
+    )
+
+    probe_started = asyncio.Event()
+    keep_probe_running = asyncio.Event()
+
+    async def failing_operation(_: str) -> None:
+        request = httpx.Request(
+            method="POST",
+            url="http://provider.test/process-payment",
+        )
+        response = httpx.Response(
+            status_code=500,
+            request=request,
+        )
+        response.raise_for_status()
+
+    async def cancellable_probe(_: str) -> None:
+        probe_started.set()
+        await keep_probe_running.wait()
+
+    async def successful_operation(value: str) -> str:
+        return f"processed:{value}"
+
+    # Открываем Circuit Breaker.
+    with pytest.raises(httpx.HTTPStatusError):
+        await breaker.call(failing_operation, "payment-1")
+
+    assert breaker.state == CircuitBreakerState.OPEN
+
+    # После recovery timeout этот вызов становится единственным HALF_OPEN probe.
+    probe_task = asyncio.create_task(breaker.call(cancellable_probe, "payment-2"))
+
+    await probe_started.wait()
+
+    assert breaker.state == CircuitBreakerState.HALF_OPEN
+
+    # Имитируем shutdown, client disconnect или другую отмену task.
+    probe_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await probe_task
+
+    # Отмена не должна навечно оставлять занятый HALF_OPEN permit.
+    assert breaker.state == CircuitBreakerState.OPEN
+    assert breaker.opened_at is not None
+
+    # При recovery_timeout=0 следующий probe должен быть разрешён.
+    result = await breaker.call(successful_operation, "payment-3")
+
+    assert result == "processed:payment-3"
+    assert breaker.state == CircuitBreakerState.CLOSED
+    assert breaker.failure_count == 0
+    assert breaker.opened_at is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_regular_call_does_not_count_as_provider_failure() -> None:
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        recovery_timeout_seconds=30,
+    )
+
+    operation_started = asyncio.Event()
+    keep_operation_running = asyncio.Event()
+
+    async def cancellable_operation(_: str) -> None:
+        operation_started.set()
+        await keep_operation_running.wait()
+
+    operation_task = asyncio.create_task(
+        breaker.call(cancellable_operation, "payment-1")
+    )
+
+    await operation_started.wait()
+
+    operation_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await operation_task
+
+    assert breaker.state == CircuitBreakerState.CLOSED
+    assert breaker.failure_count == 0
+    assert breaker.opened_at is None

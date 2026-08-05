@@ -8,6 +8,8 @@ from app.schemas.provider import ProviderPaymentRequest, ProviderPaymentResponse
 
 logger = structlog.get_logger()
 
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+
 
 class PaymentProviderClient:
     def __init__(
@@ -34,7 +36,9 @@ class PaymentProviderClient:
             retry_status_code: int | None = None
             try:
                 response = await self._client.post(
-                    "/process-payment", json=data.model_dump(mode="json")
+                    "/process-payment",
+                    json=data.model_dump(mode="json"),
+                    headers={IDEMPOTENCY_HEADER: str(data.payment_id)},
                 )
                 response.raise_for_status()
                 return ProviderPaymentResponse.model_validate(response.json())

@@ -1,3 +1,28 @@
+x-payment-environment: &payment-environment
+  DATABASE_URL: ${DATABASE_URL}
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+  KAFKA_TOPIC: ${KAFKA_TOPIC}
+  OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE}
+  OUTBOX_RELAY_POLL_INTERVAL_SECONDS: ${OUTBOX_RELAY_POLL_INTERVAL_SECONDS}
+  APP_HOST: ${APP_HOST}
+  APP_PORT: ${APP_PORT}
+  PAYMENT_PROVIDER_URL: http://mock-provider:8001
+  PAYMENT_PROVIDER_TIMEOUT_SECONDS: ${PAYMENT_PROVIDER_TIMEOUT_SECONDS}
+  PAYMENT_PROVIDER_MAX_ATTEMPTS: ${PAYMENT_PROVIDER_MAX_ATTEMPTS}
+  PAYMENT_PROVIDER_RETRY_BASE_DELAY_SECONDS: ${PAYMENT_PROVIDER_RETRY_BASE_DELAY_SECONDS}
+  PAYMENT_PROVIDER_FAILURE_THRESHOLD: ${PAYMENT_PROVIDER_FAILURE_THRESHOLD}
+  PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS: ${PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS}
+x-analytics-environment: &analytics-environment
+  DATABASE_URL: ${ANALYTICS_DATABASE_URL}
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+  KAFKA_TOPIC: ${KAFKA_TOPIC}
+  KAFKA_CONSUMER_GROUP: ${ANALYTICS_KAFKA_CONSUMER_GROUP}
+  KAFKA_AUTO_OFFSET_RESET: ${ANALYTICS_KAFKA_AUTO_OFFSET_RESET}
+  KAFKA_DLQ_TOPIC: ${ANALYTICS_KAFKA_DLQ_TOPIC}
+  REDIS_URL: ${ANALYTICS_REDIS_URL}
+  ANALYTICS_SUMMARY_CACHE_TTL_SECONDS: ${ANALYTICS_SUMMARY_CACHE_TTL_SECONDS}
+  APP_HOST: ${ANALYTICS_APP_HOST}
+  APP_PORT: ${ANALYTICS_APP_PORT}
 services:
   mock-provider:
     build:
@@ -19,26 +44,25 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+  payment-migrations:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    image: payflow-payment-service:dev
+    container_name: payflow-payment-migrations
+    environment: *payment-environment
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
   payment-service:
     build:
       context: ./payment-service
       dockerfile: Dockerfile
     image: payflow-payment-service:dev
     container_name: payflow-payment-service
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE}
-      OUTBOX_RELAY_POLL_INTERVAL_SECONDS: ${OUTBOX_RELAY_POLL_INTERVAL_SECONDS}
-      APP_HOST: ${APP_HOST}
-      APP_PORT: ${APP_PORT}
-      PAYMENT_PROVIDER_URL: http://mock-provider:8001
-      PAYMENT_PROVIDER_TIMEOUT_SECONDS: ${PAYMENT_PROVIDER_TIMEOUT_SECONDS}
-      PAYMENT_PROVIDER_MAX_ATTEMPTS: ${PAYMENT_PROVIDER_MAX_ATTEMPTS}
-      PAYMENT_PROVIDER_RETRY_BASE_DELAY_SECONDS: ${PAYMENT_PROVIDER_RETRY_BASE_DELAY_SECONDS}
-      PAYMENT_PROVIDER_FAILURE_THRESHOLD: ${PAYMENT_PROVIDER_FAILURE_THRESHOLD}
-      PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS: ${PAYMENT_PROVIDER_RECOVERY_TIMEOUT_SECONDS}
+    environment: *payment-environment
     ports:
       - "${PAYMENT_SERVICE_PORT}:${APP_PORT}"
     healthcheck:
@@ -62,23 +86,27 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      payment-migrations:
+        condition: service_completed_successfully
+  analytics-migrations:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    image: payflow-analytics-service:dev
+    container_name: payflow-analytics-migrations
+    environment: *analytics-environment
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      analytics-db:
+        condition: service_healthy
   analytics-service:
     build:
       context: ./analytics-service
       dockerfile: Dockerfile
     image: payflow-analytics-service:dev
     container_name: payflow-analytics-service
-    environment:
-      DATABASE_URL: ${ANALYTICS_DATABASE_URL}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      KAFKA_CONSUMER_GROUP: ${ANALYTICS_KAFKA_CONSUMER_GROUP}
-      KAFKA_AUTO_OFFSET_RESET: ${ANALYTICS_KAFKA_AUTO_OFFSET_RESET}
-      KAFKA_DLQ_TOPIC: ${ANALYTICS_KAFKA_DLQ_TOPIC}
-      REDIS_URL: ${ANALYTICS_REDIS_URL}
-      ANALYTICS_SUMMARY_CACHE_TTL_SECONDS: ${ANALYTICS_SUMMARY_CACHE_TTL_SECONDS}
-      APP_HOST: ${ANALYTICS_APP_HOST}
-      APP_PORT: ${ANALYTICS_APP_PORT}
+    environment: *analytics-environment
     ports:
       - "${ANALYTICS_SERVICE_PORT}:${ANALYTICS_APP_PORT}"
     healthcheck:
@@ -99,6 +127,8 @@ services:
       kafka:
         condition: service_healthy
       kafka-init:
+        condition: service_completed_successfully
+      analytics-migrations:
         condition: service_completed_successfully
   postgres:
     image: postgres:17-alpine

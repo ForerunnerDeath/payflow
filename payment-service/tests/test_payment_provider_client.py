@@ -332,3 +332,61 @@ async def test_does_not_retry_invalid_provider_response() -> None:
             await provider_client.process_payment(request_data)
 
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_sends_same_idempotency_key_on_every_retry() -> None:
+    attempts = 0
+    received_idempotency_keys: list[str] = []
+
+    payment_id = uuid4()
+    provider_payment_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+
+        received_idempotency_keys.append(request.headers["Idempotency-Key"])
+
+        if attempts < 3:
+            return httpx.Response(
+                status_code=500,
+                request=request,
+            )
+
+        return httpx.Response(
+            status_code=200,
+            request=request,
+            json={
+                "provider_payment_id": str(provider_payment_id),
+                "status": "approved",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://provider.test",
+    ) as http_client:
+        provider_client = PaymentProviderClient(
+            client=http_client,
+            max_attempts=3,
+            retry_base_delay_seconds=0,
+        )
+
+        request_data = ProviderPaymentRequest(
+            payment_id=payment_id,
+            amount=Decimal("500.15"),
+            currency="RUB",
+        )
+
+        result = await provider_client.process_payment(request_data)
+
+    assert attempts == 3
+    assert result.provider_payment_id == provider_payment_id
+    assert received_idempotency_keys == [
+        str(payment_id),
+        str(payment_id),
+        str(payment_id),
+    ]

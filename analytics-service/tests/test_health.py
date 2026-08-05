@@ -1,3 +1,5 @@
+import asyncio
+
 import app.api.health as health_module
 import pytest
 from app.core.health import ConsumerHealthState
@@ -14,6 +16,12 @@ class HealthyRedisClient:
 class UnavailableRedisClient:
     async def ping(self) -> bool:
         raise ConnectionError("Redis unavailable")
+
+
+class SlowRedisClient:
+    async def ping(self) -> bool:
+        await asyncio.sleep(10.0)
+        return True
 
 
 async def successful_db_check() -> None:
@@ -235,5 +243,48 @@ async def test_readiness_returns_not_ready_when_consumer_is_starting(
             "postgres": "ok",
             "kafka_consumer": "starting",
             "redis": "ok",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_returns_degraded_when_redis_ping_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        health_module,
+        "check_db_connection",
+        successful_db_check,
+    )
+    monkeypatch.setattr(
+        health_module,
+        "REDIS_HEALTH_CHECK_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    consumer_health_state = ConsumerHealthState()
+    consumer_health_state.mark_running()
+
+    configure_health_state(
+        app,
+        redis_client=SlowRedisClient(),
+        consumer_health_state=consumer_health_state,
+    )
+
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "degraded",
+        "components": {
+            "postgres": "ok",
+            "kafka_consumer": "ok",
+            "redis": "unavailable",
         },
     }

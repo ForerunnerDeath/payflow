@@ -7,3 +7,10 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+]
