@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from time import monotonic
@@ -114,12 +115,33 @@ class CircuitBreaker:
                 failure_threshold=self.failure_threshold,
             )
 
+    def _record_cancelled_probe(self, is_half_open_probe: bool) -> None:
+        if not is_half_open_probe:
+            return
+
+        if self.state != CircuitBreakerState.HALF_OPEN:
+            return
+
+        self.state = CircuitBreakerState.OPEN
+        self.opened_at = monotonic()
+
+        logger.warning(
+            "circuit_breaker_state_changed",
+            previous_state=CircuitBreakerState.HALF_OPEN.value,
+            new_state=CircuitBreakerState.OPEN.value,
+            reason="trial_call_cancelled",
+            recovery_timeout_seconds=self.recovery_timeout_seconds,
+        )
+
     async def call(
         self, operation: Callable[[ArgumentT], Awaitable[ResultT]], argument: ArgumentT
     ) -> ResultT:
         is_half_open_probe = self._before_call()
         try:
             result = await operation(argument)
+        except asyncio.CancelledError:
+            self._record_cancelled_probe(is_half_open_probe)
+            raise
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             if 500 <= status_code < 600:
